@@ -1,0 +1,21 @@
+for document parser
+
+import { parseDocument, parseToSourceText } from './documentparser.js';
+
+const doc = await parseDocument('./report.pdf');                                       // from a path
+const doc2 = await parseDocument(req.file.buffer, { filename: req.file.originalname }); // from a multer upload
+const sourceText = await parseToSourceText('./report.docx');                           // goes straight into POST /api/jobs
+bash
+node documentparser.js ./report.pdf          # full JSON
+node documentparser.js ./report.docx --text  # clean text only
+
+for web crawler 
+
+
+node webcrawler.js https://site.com/article           # full structured JSON
+node webcrawler.js https://site.com/article --text    # clean text with a small header
+node webcrawler.js https://site.com --site 5          # crawl up to 5 pages of one site
+js
+import { crawlPage, crawlToSourceText } from './webcrawler.js';
+const page = await crawlPage(url);
+const sourceText = await crawlToSourceText(url); 

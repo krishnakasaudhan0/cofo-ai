@@ -1,4 +1,9 @@
 .rocketride/
 .env
+.env.*
 node_modules/
 coverage/
+storage/
+.claude/
+dist/
+.DS_Store

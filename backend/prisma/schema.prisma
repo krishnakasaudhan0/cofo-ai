@@ -1,0 +1,79 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String    @id @default(uuid())
+  email     String    @unique
+  password  String
+  createdAt DateTime  @default(now())
+  projects  Project[]
+}
+
+model Project {
+  id            String         @id @default(uuid())
+  userId        String?
+  user          User?          @relation(fields: [userId], references: [id])
+  title         String         @default("Untitled")
+  sourceBundle  Json                         // Layer 1
+  contentHash   String                       // sha256 of cleaned sources → IR cache
+  status        String         @default("analyzing") // analyzing | ready | failed
+  error         String?
+  createdAt     DateTime       @default(now())
+  ir            CanonicalIR?
+  jobs          GenerationJob[]
+  @@index([contentHash])
+}
+
+model CanonicalIR {
+  id            String   @id @default(uuid())
+  projectId     String   @unique
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  schemaVersion String   @default("2.0")
+  data          Json                         // Layer 2
+  droppedFacts  Json?                        // facts that failed provenance check
+  createdAt     DateTime @default(now())
+}
+
+model GenerationJob {
+  id        String    @id @default(uuid())
+  projectId String
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  types     String[]                         // ["linkedin","video"]
+  params    Json                             // audience, tone, language, detail, objective, style
+  status    String    @default("queued")     // queued | running | done | partial | failed
+  createdAt DateTime  @default(now())
+  outputs   Output[]
+}
+
+model Output {
+  id         String   @id @default(uuid())
+  jobId      String
+  job        GenerationJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  type       String
+  version    Int      @default(1)
+  parentId   String?                         // previous version (regenerate chain)
+  status     String   @default("pending")    // pending | running | done | failed
+  content    Json?                           // structured result
+  fileUrl    String?                         // pptx / pdf / srt / html
+  warnings   Json?                           // faithfulness check output
+  error      String?
+  createdAt  DateTime @default(now())
+}
+
+model LlmCall {                              // for metrics in the demo + debugging
+  id        String   @id @default(uuid())
+  purpose   String                           // analyze | gen:linkedin | check:faithfulness ...
+  model     String
+  inTokens  Int
+  outTokens Int
+  latencyMs Int
+  retries   Int      @default(0)
+  ok        Boolean
+  createdAt DateTime @default(now())
+}

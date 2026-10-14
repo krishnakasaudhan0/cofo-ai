@@ -1,36 +1,87 @@
 import express from 'express';
 import multer from 'multer';
 import cors from 'cors';
+import path from 'node:path';
+import fs from 'node:fs';
+import dotenv from 'dotenv';
 import extractAndSanitizeUrls from './src/urlSanitizer.js';
-import { crawlPage, crawlToSourceText } from './src/webcrawler.js';
-import { parseDocument, parseToSourceText } from './src/documentparser.js';
+import { crawlPage } from './src/webcrawler.js';
+import { parseDocument } from './src/documentparser.js';
+import { initDb, prisma } from './src/db.js';
+import { projects } from './src/routes/projects.js';
+import { jobs } from './src/routes/jobs.js';
+import { outputs } from './src/routes/outputs.js';
+
+dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Ensure storage output directory exists
+const storageDir = path.resolve('storage/outputs');
+fs.mkdirSync(storageDir, { recursive: true });
 
 // Middleware
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(cors());
 
-// Configure Multer for handling file uploads (stored in memory as buffers)
-const upload = multer({ 
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 } // 25MB limit per file
-});
+// Serve static generated outputs (PPTX, SRT, HTML, PDF)
+app.use('/storage/outputs', express.static(storageDir));
+
+// Connect to Neon Database
+initDb();
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', time: new Date().toISOString() });
+  res.json({ status: 'ok', service: 'cofo-backend', time: new Date().toISOString() });
 });
+
+// Telemetry & metrics endpoint for evaluation/demo
+app.get('/api/metrics', async (req, res) => {
+  try {
+    const totalCalls = await prisma.llmCall.count();
+    const successfulCalls = await prisma.llmCall.count({ where: { ok: true } });
+    const calls = await prisma.llmCall.findMany({
+      take: 50,
+      orderBy: { createdAt: 'desc' }
+    });
+
+    const avgLatency = calls.length > 0 
+      ? Math.round(calls.reduce((acc, c) => acc + c.latencyMs, 0) / calls.length) 
+      : 0;
+
+    const totalInTokens = calls.reduce((acc, c) => acc + c.inTokens, 0);
+    const totalOutTokens = calls.reduce((acc, c) => acc + c.outTokens, 0);
+
+    return res.json({
+      totalCalls,
+      successfulCalls,
+      avgLatencyMs: avgLatency,
+      totalInTokens,
+      totalOutTokens,
+      recentCalls: calls.slice(0, 10)
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Mount modular API routes from COFO-AI specification
+app.use('/api', projects);
+app.use('/api', jobs);
+app.use('/api', outputs);
 
 /**
  * POST /api/v1/ingest
- * Accepts multipart/form-data or JSON: raw_text, urls (JSON array or comma-separated string), and files.
+ * Ingestion pipeline creating Layer 1 Source Bundle and compiling Canonical IR
  */
-app.post('/api/v1/ingest', upload.array('files'), async (req, res) => {
+app.post('/api/v1/ingest', multer({ 
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 } 
+}).array('files'), async (req, res) => {
   try {
-    const { raw_text, urls, metadata } = req.body || {};
+    const { raw_text, urls, metadata, target_outputs, parameters } = req.body || {};
     const uploadedFiles = req.files || [];
     
     let parsedMetadata = {};
@@ -59,17 +110,14 @@ app.post('/api/v1/ingest', upload.array('files'), async (req, res) => {
       });
     }
 
-    // 2. Handle URLs (both extracted from raw_text and explicitly provided)
+    // 2. Handle URLs
     let explicitUrls = [];
     if (urls) {
       if (typeof urls === 'string') {
         try {
           const parsed = JSON.parse(urls);
-          if (Array.isArray(parsed)) {
-            explicitUrls = parsed;
-          } else if (typeof parsed === 'string') {
-            explicitUrls = [parsed];
-          }
+          if (Array.isArray(parsed)) explicitUrls = parsed;
+          else if (typeof parsed === 'string') explicitUrls = [parsed];
         } catch (e) {
           explicitUrls = urls.split(',').map((u) => u.trim());
         }
@@ -78,7 +126,6 @@ app.post('/api/v1/ingest', upload.array('files'), async (req, res) => {
       }
     }
 
-    // Combine, deduplicate, and filter valid URLs
     const allUrls = [...new Set([...extractedUrls, ...explicitUrls])].filter(
       (u) => typeof u === 'string' && u.trim().length > 0
     );
@@ -137,33 +184,33 @@ app.post('/api/v1/ingest', upload.array('files'), async (req, res) => {
       }
     }
 
-    // Extract target_outputs and generation parameters if provided
-    let targetOutputs = parsedMetadata.target_outputs || [];
-    if (!targetOutputs.length && req.body.target_outputs) {
+    // Target outputs and parameters
+    let parsedOutputs = [];
+    if (target_outputs) {
       try {
-        targetOutputs = typeof req.body.target_outputs === 'string' ? JSON.parse(req.body.target_outputs) : req.body.target_outputs;
+        parsedOutputs = typeof target_outputs === 'string' ? JSON.parse(target_outputs) : target_outputs;
       } catch (e) {
-        targetOutputs = [req.body.target_outputs];
+        parsedOutputs = [target_outputs];
       }
     }
 
-    let parameters = parsedMetadata.parameters || {};
-    if (Object.keys(parameters).length === 0 && req.body.parameters) {
+    let parsedParams = {};
+    if (parameters) {
       try {
-        parameters = typeof req.body.parameters === 'string' ? JSON.parse(req.body.parameters) : req.body.parameters;
+        parsedParams = typeof parameters === 'string' ? JSON.parse(parameters) : parameters;
       } catch (e) {
-        parameters = { raw_parameters: req.body.parameters };
+        parsedParams = { raw: parameters };
       }
     }
 
-    // 4. Generate Canonical Prompt IR (Intermediate Representation)
-    const canonicalIr = {
-      ir_version: "1.0",
+    // Layer 1 Source Bundle
+    const sourceBundle = {
+      ir_version: "2.0",
       session_id: `sess_${Date.now()}`,
       timestamp: new Date().toISOString(),
       metadata: parsedMetadata,
-      target_outputs: targetOutputs,
-      parameters: parameters,
+      target_outputs: parsedOutputs,
+      parameters: parsedParams,
       sources: sources,
       total_sources: sources.length,
       status: "compiled"
@@ -171,7 +218,7 @@ app.post('/api/v1/ingest', upload.array('files'), async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      data: canonicalIr
+      data: sourceBundle
     });
 
   } catch (error) {
@@ -184,5 +231,5 @@ app.post('/api/v1/ingest', upload.array('files'), async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Ingestion API running on port ${PORT}`);
+  console.log(`CoFo Ingestion & Generation Engine running on port ${PORT}`);
 });
