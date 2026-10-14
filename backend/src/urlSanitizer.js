@@ -3,7 +3,7 @@
  * @param {string} rawPrompt - The raw text input entered by the user.
  * @returns {Object} An object containing the array of extracted URLs and the cleaned prompt.
  */
-function extractAndSanitizeUrls(rawPrompt) {
+export default function extractAndSanitizeUrls(rawPrompt) {
     if (!rawPrompt || typeof rawPrompt !== 'string') {
         return { extractedUrls: [], sanitizedPrompt: '' };
     }
@@ -26,4 +26,3 @@ function extractAndSanitizeUrls(rawPrompt) {
     };
 }
 
-module.exports = { extractAndSanitizeUrls };
