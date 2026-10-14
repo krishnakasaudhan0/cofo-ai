@@ -137,12 +137,33 @@ app.post('/api/v1/ingest', upload.array('files'), async (req, res) => {
       }
     }
 
+    // Extract target_outputs and generation parameters if provided
+    let targetOutputs = parsedMetadata.target_outputs || [];
+    if (!targetOutputs.length && req.body.target_outputs) {
+      try {
+        targetOutputs = typeof req.body.target_outputs === 'string' ? JSON.parse(req.body.target_outputs) : req.body.target_outputs;
+      } catch (e) {
+        targetOutputs = [req.body.target_outputs];
+      }
+    }
+
+    let parameters = parsedMetadata.parameters || {};
+    if (Object.keys(parameters).length === 0 && req.body.parameters) {
+      try {
+        parameters = typeof req.body.parameters === 'string' ? JSON.parse(req.body.parameters) : req.body.parameters;
+      } catch (e) {
+        parameters = { raw_parameters: req.body.parameters };
+      }
+    }
+
     // 4. Generate Canonical Prompt IR (Intermediate Representation)
     const canonicalIr = {
       ir_version: "1.0",
       session_id: `sess_${Date.now()}`,
       timestamp: new Date().toISOString(),
       metadata: parsedMetadata,
+      target_outputs: targetOutputs,
+      parameters: parameters,
       sources: sources,
       total_sources: sources.length,
       status: "compiled"
