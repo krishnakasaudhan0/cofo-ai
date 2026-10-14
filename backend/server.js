@@ -42,13 +42,14 @@ app.post('/api/v1/ingest', upload.array('files'), async (req, res) => {
     }
 
     const sources = [];
-
+    let extractedUrls = [];
     // 1. Handle Raw Text Input
     if (raw_text) {
+      const {extractedUrls,sanitizedPrompt} = extractAndSanitizeUrls(raw_text);
       sources.push({
         source_type: "raw_text",
         origin: "user_input",
-        content: raw_text.trim(),
+        content: sanitizedPrompt,
         tokens: raw_text.split(/\s+/).length // Basic rough token estimate
       });
     }
@@ -67,12 +68,15 @@ app.post('/api/v1/ingest', upload.array('files'), async (req, res) => {
         urlList = urls;
       }
 
+      urlList = [...new Set([...extractedUrls, ...urlList])];
+
       for (const rawUrl of urlList) {
         if (!rawUrl) continue;
-        const sanitizedUrl = sanitizeUrl(rawUrl);
+        const sanitizedUrl = rawUrl;  //no sanitization for now as per requirements
         
         try {
-          const crawlResult = await crawlUrl(sanitizedUrl);
+          const crawlResult = await crawlToSourceText(sanitizedUrl);
+          
           sources.push({
             source_type: "web_page",
             origin: rawUrl,
@@ -92,7 +96,7 @@ app.post('/api/v1/ingest', upload.array('files'), async (req, res) => {
         }
       }
     }
-
+    
     // 3. Handle File Uploads (Document Parser)
     for (const file of uploadedFiles) {
       try {
